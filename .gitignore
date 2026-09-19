@@ -1,0 +1,14 @@
+# 本机配置：含你的会话名、开关状态、发送脚本绝对路径。
+# 装的时候 install.py 会照 config.example.json 生成一份。
+config.json
+
+# 运行时状态：notify.log 有发送记录和项目名，last_sent.json 是去重时间戳，
+# queue/ 是待补发的消息正文 —— 都是本机私货，不进版本库。
+state/
+
+# 一次性探针 test_detach.ps1 的产物
+tools/_detach_*.ps1
+tools/_detach_marker.txt
+
+__pycache__/
+*.pyc

@@ -1,0 +1,16 @@
+{
+    "_comment":  "各字段含义见 SKILL.md「配置」一节。enabled 默认 false，不开就一条都不发。install.py 在 config.json 不存在时会照这个文件生成一份。",
+    "enabled":  false,
+    "target":  "文件传输助手",
+    "sender_script":  "",
+    "triggers":  {
+                     "needs_input":  true,
+                     "error":  true
+                 },
+    "presence_idle_min_seconds":  120,
+    "summary_max_chars":  220,
+    "dedupe_seconds":  90,
+    "queue_when_unreachable":  false,
+    "queue_max_age_hours":  24,
+    "log_max_kb":  512
+}
