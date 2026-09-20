@@ -43,6 +43,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/wx_switch.ps1 -Statu
 关闭时运行 `wx_switch.ps1 -Off`，然后 `python scripts/codex_watch.py stop`。
 观察器每个任务单独启动，不会自动监测其它任务。权限/执行环境不允许启动时，明确报告错误观察尚未启用。
 
+**Codex 权限提醒以需要用户处理为目标。** 自动审批后能继续执行时，不额外发送权限预提醒，
+也不要为这类请求未触发 hook 而补一个“一申请就通知”的入口。自动审批拒绝后，若能自行采用安全替代方案，
+继续执行；确实需要停下来询问用户时，按下面的提问流程通知。当前权限 hook 的覆盖实测见 Codex 说明，
+不能仅凭出现权限申请就断言用户正在被等待。
+
 **在 Codex 中准备停下来等用户回答时**（包括 `request_user_input`、异步问题卡片或最终回复中的必要问题）：
 将真正需要用户决定的问题和简短选项写入 UTF-8 文件，然后运行
 `python scripts/codex_notify.py --message-file <绝对路径>`，再发出问题。
@@ -186,6 +191,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/test_notify.ps1
 | 路径 | 作用 |
 | --- | --- |
 | `hooks/dispatch.ps1` | hook 入口。必须立刻返回、绝不往 stdout 写东西。自己读 stdin 原始字节再按 UTF-8 解码（本机控制台是 CP936，直接 `ReadToEnd` 会把 BOM 和开头的 `{` 一起吃成乱码）。 |
+| `state/dispatch.jsonl` | 不含原始参数的入口阶段日志；推送关闭也记录，排查方式见 Codex 说明。 |
+| `tools/probe_codex_approvals.py` | 使用本机模拟模型，对照命令提权与权限申请；临时会话中的审批全部拒绝，不发送微信。 |
 | `tools/install_codex.py` | Codex 安装、预览和移除 hook。保留用户配置与其它 hook。 |
 | `scripts/codex_watch.py` | 独立观察当前任务的持久化 failed 回合；支持 check/start/status/stop。 |
 | `scripts/codex_notify.py` | Codex 提问前的主动通知入口。 |

@@ -235,6 +235,27 @@ exit 0
             self.dispatch(data)
         self.assertEqual(self.captures(), [])
 
+    def test_diagnostics_distinguish_parse_failure_from_disabled_delivery(self):
+        self.dispatch(b'{"secret-command-token": invalid')
+        self.config['enabled'] = False
+        self.save_config()
+        self.dispatch(self.event())
+        raw = (self.state / 'dispatch.jsonl').read_text(encoding='utf-8')
+        entries = [json.loads(line) for line in raw.splitlines()]
+        failures = [row for row in entries if row['stage'] == 'failed']
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0]['failed_stage'], 'parse_input')
+        self.assertEqual(sum(row['stage'] == 'entered' for row in entries), 2)
+        self.assertTrue(any(row['stage'] == 'worker_started' for row in entries))
+        self.assertNotIn('secret-command-token', raw)
+        self.assertNotIn('需要访问网络', raw)
+        self.assertEqual(self.captures(), [])
+
+    def test_unwritable_diagnostic_log_does_not_block_hook(self):
+        (self.state / 'dispatch.jsonl').mkdir()
+        self.dispatch(self.event())
+        self.assertEqual(len(self.captures()), 1)
+
     def test_missing_description_uses_safe_fallback(self):
         self.dispatch(self.event(tool_input={"command": "secret-command-token"}))
         body = self.captures()[0]["body"]

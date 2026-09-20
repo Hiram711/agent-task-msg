@@ -10,6 +10,8 @@
 
 不注册任务完成通知；`completed`、`interrupted`、重试中及读取错误均不当作 API 故障。
 两个新入口都遵守总开关、目标会话、免打扰、队列与去重配置，不自动批准权限。
+权限通知的需求边界是“需要用户处理”：自动审批后继续执行不额外提醒；自动拒绝后确实需要用户回答时，
+走主动提问入口。因此不为自动审批路径增加一律发送的 `PreToolUse` 预提醒。
 
 依据：[官方 Hooks](https://developers.openai.com/zh-Hans/docs/hooks)、[官方 App Server](https://developers.openai.com/zh-Hans/docs/app-server)（2026-09-20 核对）。
 
@@ -106,8 +108,36 @@ python scripts/codex_notify.py --message-file 'C:\work\question.txt'
 
 本机桌面版核心 0.155.0-alpha.9.2 的 `request_permissions` 路径实测未产生通知，
 重启也未解决。两个新增入口不依赖这个权限 hook，但不代表权限审批问题已修复。
+后续独立核心对照确认：人工审批模式下，`exec_command` 提权会派发该 hook，
+`request_permissions` 会产生待审批请求但没有派发该 hook。当前桌面任务本身使用自动审查，
+不能把这项对照结论扩大成“所有桌面审批都不支持”；详见 [联调记录](integration-result.md)。
 微信仍需要可操作的桌面；锁屏、抢不到前台等情况按原配置处理。
 默认键鼠空闲不足 120 秒时不发送，检查开关用 `wx_switch.ps1 -Status`，查发送结果看 `state/notify.log`。
+
+### 定位权限通知断点
+
+`state/dispatch.jsonl` 会记录入口阶段，即使推送总开关关闭也记录；它不会发微信。
+顺序为 `entered → input_read → input_parsed → event_accepted → payload_written → worker_started`。
+每次调用有独立 `trace`，事件接受记录中的 `session_key` 为任务 ID 的 SHA-256 前 16 位（大写），便于关联。
+解析或启动异常记录 `failed`、`failed_stage` 与异常类型，未知事件记录 `event_skipped`。
+日志不写原始输入、命令、审批理由、错误正文；超过 1 MiB 时保留一份 `.old`。日志写失败不影响审批。
+
+- 没有 `entered`：尚未证明脚本启动，需要结合宿主的 `hook/started` / `hook/completed` 查加载和执行路径。
+- 有 `failed`：按 `failed_stage` 定位读取、解析、载荷写入或进程启动问题。
+- 有 `worker_started`：继续查 `notify.log`；它仅证明通知进程启动，不等于消息发送成功。
+
+复用已受信任 hook，使用本机模拟模型做独立核心对照：
+
+```powershell
+python tools/probe_codex_approvals.py --output 'C:\work\approval-comparison.json'
+```
+
+运行前推送必须关闭。工具要求当前只有本技能的一个已启用且受信任 hook，不修改配置或信任记录。
+它启动临时 App Server，临时启用 `request_permissions_tool`，创建不持久化的测试会话，保持只读沙盒；
+测试进程关闭插件发现，避免无关的插件市场刷新；用户的持久配置不变。
+审批策略仅在这些测试会话中设为 `on-request` / `user`。测试客户端将请求挂起两秒后拒绝，
+不授予权限，并核对命令最终状态为 `declined`。模型响应来自本机固定脚本，不调用外部模型。
+输出包括审批接口、hook 生命周期和关联入口阶段。工具测试的是所选核心，不能替代现有桌面连接的验收。
 
 ## 测试
 

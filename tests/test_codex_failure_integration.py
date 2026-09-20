@@ -48,6 +48,9 @@ class RealFailureTest(IsolatedTest):
         home.mkdir()
         (home / "config.toml").write_text(f'''model = "notify-fixture"
 model_provider = "notify-fixture"
+[features]
+plugins = false
+remote_plugin = false
 [model_providers.notify-fixture]
 name = "Local failure fixture"
 base_url = "http://127.0.0.1:{httpd.server_port}/v1"
