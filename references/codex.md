@@ -126,6 +126,10 @@ python scripts/codex_notify.py --message-file 'C:\work\question.txt'
 - 有 `failed`：按 `failed_stage` 定位读取、解析、载荷写入或进程启动问题。
 - 有 `worker_started`：继续查 `notify.log`；它仅证明通知进程启动，不等于消息发送成功。
 
+Windows 后台发送器必须与 Hook 的输出管道分离。派发器使用隐藏窗口的 ShellExecute 启动工作进程；
+若改为直接继承标准流，Hook 会等到微信操作完成才关闭输出管道，可能被宿主的 15 秒超时终止。
+调试时也要检查 `hook/completed` 的状态，不能仅凭 `worker_started` 判断 Hook 成功。
+
 复用已受信任 hook，使用本机模拟模型做独立核心对照：
 
 ```powershell

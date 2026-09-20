@@ -176,7 +176,7 @@ exit 0
     def captures(self):
         return [installer.load_json(p) for p in sorted(self.state.glob("capture_*.json"))]
 
-    def dispatch(self, data, bom=False, codex=True):
+    def dispatch(self, data, bom=False, codex=True, dispatch_timeout=15):
         raw = data if isinstance(data, bytes) else json.dumps(data, ensure_ascii=False).encode("utf-8")
         if bom:
             raw = b"\xef\xbb\xbf" + raw
@@ -188,7 +188,7 @@ exit 0
             args = [str(PS), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
                     str(self.runtime / "hooks/dispatch.ps1"), "-Kind", "needs_input"]
         start = time.monotonic()
-        result = subprocess.run(args, input=raw, capture_output=True, timeout=15)
+        result = subprocess.run(args, input=raw, capture_output=True, timeout=dispatch_timeout)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, b"", "hook must not emit an approval decision")
         self.assertEqual(result.stderr, b"")
@@ -254,6 +254,15 @@ exit 0
     def test_unwritable_diagnostic_log_does_not_block_hook(self):
         (self.state / 'dispatch.jsonl').mkdir()
         self.dispatch(self.event())
+        self.assertEqual(len(self.captures()), 1)
+
+    def test_background_sender_does_not_keep_hook_output_pipes_open(self):
+        source = self.sender.read_text(encoding='utf-8-sig')
+        self.sender.write_text(source.replace('$body =', 'Start-Sleep -Seconds 8\n$body =', 1),
+                               encoding='utf-8-sig')
+        # The sender must outlive the captured hook process, not hold its pipes
+        # open until the host timeout kills the entire notification operation.
+        self.dispatch(self.event(), dispatch_timeout=5)
         self.assertEqual(len(self.captures()), 1)
 
     def test_missing_description_uses_safe_fallback(self):

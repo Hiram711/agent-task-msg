@@ -134,8 +134,11 @@ try {
     $psi.Arguments = ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Kind {1}' -f `
         (Join-Path $root 'scripts\wx_notify.ps1'), $Kind)
     if ($pf) { $psi.Arguments += (' -PayloadFile "{0}"' -f $pf) }
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow = $true
+    # ShellExecute starts the background worker without inheriting the hook's
+    # captured stdout/stderr pipes. Otherwise Codex waits for those pipes until
+    # its 15s hook timeout and terminates a real (slower) WeChat send midway.
+    $psi.UseShellExecute = $true
+    $psi.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
     $worker = [System.Diagnostics.Process]::Start($psi)
     try { Write-Diagnostic 'worker_started' @{ worker_pid = $worker.Id } }
     finally { if ($worker) { $worker.Dispose() } } # 不 WaitForExit：立刻返回
