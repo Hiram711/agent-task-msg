@@ -5,6 +5,7 @@
     "sender_script":  "",
     "triggers":  {
                      "needs_input":  true,
+                     "question":  true,
                      "error":  true
                  },
     "presence_idle_min_seconds":  120,

@@ -1,6 +1,6 @@
 ---
 name: agent-task-msg
-description: 通过本机微信提醒用户处理 Codex 权限审批，或 Claude Code 的待确认和 API 错误中断；也用于开启、关闭推送及查询状态。Codex 只接入 PermissionRequest，不支持自动 API 错误通知。任务完成后的微信通知由智能体按用户要求调用 wechat-send。
+description: 通过本机微信提醒 Codex 回合失败、等待用户回答及权限审批，或 Claude Code 的待确认和 API 错误中断。用于开启、关闭推送和查询状态；Codex 错误提醒需启动独立观察器，提问提醒由智能体在提问前调用。任务完成通知仍按用户要求调用 wechat-send。
 ---
 
 # 微信任务提醒
@@ -9,7 +9,7 @@ description: 通过本机微信提醒用户处理 Codex 权限审批，或 Claud
 
 ## 运行环境
 
-- **Codex**：先读 [Codex 安装与事件说明](references/codex.md)，使用 `tools/install_codex.py`。安装器复制完整运行文件到 `$CODEX_HOME/skills/agent-task-msg`，并合并 `$CODEX_HOME/hooks.json`；默认 `CODEX_HOME` 是 `~/.codex`。仅注册 `PermissionRequest`，不注册 Claude 专属事件。新 hook 需要用户审查并信任，安装技能本身不代表通知已接通。
+- **Codex**：先读 [Codex 安装与事件说明](references/codex.md)，使用 `tools/install_codex.py`。安装器复制完整运行文件到 `$CODEX_HOME/skills/agent-task-msg`，并合并 `$CODEX_HOME/hooks.json`；默认 `CODEX_HOME` 是 `~/.codex`。权限 hook、错误观察器和主动提问通知是三个独立入口。新 hook 需要用户审查并信任，安装技能本身不代表自动通知已接通。
 - **Claude Code**：使用 `tools/install.py`；下面的 `Notification` / `StopFailure` 和 `settings.json` 热加载说明仅适用于 Claude Code。
 - 两种环境共用下述开关、免打扰、队列与微信发送逻辑。Codex 安装版的相对路径以已安装的技能目录为准，不要误改克隆仓库的 `config.json`。
 
@@ -35,20 +35,35 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/wx_switch.ps1 -Statu
 | 现在是开还是关 / 队列里有几条 | `-Status` |
 | 发到某个别的聊天窗口 | `-Target "<会话名>"` |
 
-`-Status` 会打印总开关、目标会话、两个触发器的开关、发送脚本位置、待补发队列条数。其它字段（在场阈值、去重窗口、要不要排队）没有命令行开关，直接改 `config.json`。
+`-Status` 会打印总开关、目标会话、触发器开关、发送脚本位置、待补发队列条数。其它字段（在场阈值、去重窗口、要不要排队）没有命令行开关，直接改 `config.json`。
+
+**在 Codex 中开启推送时，还要启动当前任务的错误观察器**：`python scripts/codex_watch.py start`。
+它从 `CODEX_THREAD_ID` 获取当前任务；环境变量不存在时，传入已确认的 `--thread-id`，不要猜 ID。
+用 `python scripts/codex_watch.py status` 确认 `running`，不能把启动命令成功等同于已经监测。
+关闭时运行 `wx_switch.ps1 -Off`，然后 `python scripts/codex_watch.py stop`。
+观察器每个任务单独启动，不会自动监测其它任务。权限/执行环境不允许启动时，明确报告错误观察尚未启用。
+
+**在 Codex 中准备停下来等用户回答时**（包括 `request_user_input`、异步问题卡片或最终回复中的必要问题）：
+将真正需要用户决定的问题和简短选项写入 UTF-8 文件，然后运行
+`python scripts/codex_notify.py --message-file <绝对路径>`，再发出问题。
+只通知明确需要回答的问题，不把修辞问句或普通结束当作等待输入。
+通知失败也要把问题正常展示出来，不要陷入重复通知或自动重试；不要在微信正文里放凭据、完整命令或敏感上下文。
+该入口遵守总开关、`triggers.question` 和免打扰设置，关闭时会直接跳过。
 
 开关修改不用重启会话：`wx_notify.ps1` 每次触发都重新读 `config.json`。Claude Code 的 hook 配置由文件监视器热加载；Codex 的 hook 修改需重新审查其信任状态，不能套用 Claude 的热加载结论。
 
 ## 触发器
 
-只覆盖**智能体自己发不出通知**的情况。以下是 Claude Code 的事件；Codex 的 `PermissionRequest` 映射到同一个 `needs_input` 触发器，`error` 在 Codex 中没有对应的自动事件。
+以下是 Claude Code 的事件。Codex 的 `PermissionRequest` 映射到 `needs_input`；
+独立观察器将明确的 `failed` 回合映射到 `error`；主动提问入口使用 `question`。
+Codex 的权限 hook 在本机桌面审批路径仍有实测限制，见 [联调记录](references/integration-result.md)。
 
 | 触发器 | 什么时候响 | 对应 hook | 默认 |
 | --- | --- | --- | --- |
 | `needs_input` | 要用户确认/授权，或子 agent 等输入 | `Notification`（matcher：`permission_prompt`、`agent_needs_input`、`elicitation_dialog`、`elicitation_url_dialog`） | 开 |
 | `error` | 回合因 API 错误结束 | `StopFailure` | 开 |
 
-**就这两个，没有「任务完成」那一路。** 那种情况 Claude 还活着、还能调工具，用户交代一句「我要离开一会儿，完事微信叫我」就够了，让它自己调 `wechat-send` 发。挂 hook 只会和它自己发的那条撞车，连着两条、各夺前台 40 秒。这是用户 2026-09-19 定的：`Stop` 和 `UserPromptSubmit` 两个 hook 都摘了 —— 别再往回加。
+Claude hook 仍只有这两个，没有「任务完成」那一路。任务完成时智能体还能调工具，用户交代「完事微信叫我」时自己调 `wechat-send`，不注册 `Stop` / `UserPromptSubmit` 完成通知。
 
 ### 听到「完事微信叫我」，先回一句确认
 
@@ -90,6 +105,7 @@ matcher 里刻意不含 `idle_prompt`（「一轮干完在等下一句」）—�
 | `sender_script` | `""` | `wechat-send` 的 `wx_send.ps1` 绝对路径。留空就按默认位置找（见「文件」一节）。发送技能装在别处时填这个。 |
 | `triggers.needs_input` | `true` | 需要确认/授权时是否发。 |
 | `triggers.error` | `true` | 出错中断时是否发。 |
+| `triggers.question` | `true` | Codex 主动提问前是否发；旧配置缺字段也按 true，仍受总开关控制。 |
 | `presence_idle_min_seconds` | `120` | 键鼠空闲不到这个数就不发 —— 你人在机器前，该看见的已经看见了，没必要为此夺走前台 40 秒。设 `0` 关掉这道判断（回到「立即发，不管打扰」）。 |
 | `summary_max_chars` | `220` | 摘要截断长度。 |
 | `dedupe_seconds` | `90` | 这个窗口内同样内容只发一条。去重键刻意**不含**时间那一行，否则等于永不去重。 |
@@ -171,6 +187,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/test_notify.ps1
 | --- | --- |
 | `hooks/dispatch.ps1` | hook 入口。必须立刻返回、绝不往 stdout 写东西。自己读 stdin 原始字节再按 UTF-8 解码（本机控制台是 CP936，直接 `ReadToEnd` 会把 BOM 和开头的 `{` 一起吃成乱码）。 |
 | `tools/install_codex.py` | Codex 安装、预览和移除 hook。保留用户配置与其它 hook。 |
+| `scripts/codex_watch.py` | 独立观察当前任务的持久化 failed 回合；支持 check/start/status/stop。 |
+| `scripts/codex_notify.py` | Codex 提问前的主动通知入口。 |
+| `scripts/codex_rpc.py` | 官方 App Server 只读客户端，不启动或恢复任务。 |
 | `references/codex.md` | Codex 事件范围、信任步骤、安装和无微信自测。 |
 | `scripts/wx_notify.ps1` | 判断该不该发、组装正文、去重，然后调发送技能或排队。 |
 | `scripts/wx_switch.ps1` | 开关与配置。 |

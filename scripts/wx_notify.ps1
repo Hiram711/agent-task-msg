@@ -15,7 +15,7 @@
       6. 发送前先冲队列，保证消息顺序。
 
 .PARAMETER Kind
-    needs_input | error —— 就这两个，别再往回加第三个，理由见 SKILL.md「触发器」。
+    needs_input | error | question。question 由 Codex 主动提问入口调用。
 
 .PARAMETER PayloadFile
     hook 原始 stdin JSON 的落盘路径。
@@ -36,7 +36,7 @@
 #>
 param(
     # 不要叫 $Event：PowerShell 里 $Event 是事件相关的自动变量，会打架。
-    [ValidateSet('needs_input', 'error')]
+    [ValidateSet('needs_input', 'question', 'error')]
     [string]$Kind = '',
     [string]$PayloadFile = '',
     [switch]$FlushOnly,
@@ -127,6 +127,7 @@ function Get-Cfg {
         Target      = [string](Def $c.target '文件传输助手')
         SenderPath  = [string](Def $c.sender_script '')
         TrNeedsIn   = [bool](Def $c.triggers.needs_input $true)
+        TrQuestion  = [bool](Def $c.triggers.question $true)
         TrError     = [bool](Def $c.triggers.error $true)
         PresenceSec = [int](Def $c.presence_idle_min_seconds 120)
         SumMax      = [int](Def $c.summary_max_chars 220)
@@ -193,6 +194,7 @@ function Build-Body($cfg, [string]$ev, $pl) {
     $agentName = if ($pl -and $pl.agent -eq 'Codex') { 'Codex' } else { 'Claude Code' }
     $head = switch ($ev) {
         'needs_input'    { "[$agentName] 需要你处理" }
+        'question'       { "[$agentName] 等待你回答" }
         'error'          { "[$agentName] 出错中断" }
     }
     $proj = ''
@@ -208,6 +210,7 @@ function Build-Body($cfg, [string]$ev, $pl) {
     if ($pl) {
         $cands = switch ($ev) {
             'needs_input'    { @($pl.message, $pl.notification, $pl.last_assistant_message) }
+            'question'       { @($pl.message) }
             'error'          { @($pl.error_message, $pl.error, $pl.message, $pl.last_assistant_message) }
         }
         foreach ($c in $cands) {
@@ -437,6 +440,9 @@ try {
         }
         'error' {
             if (-not $cfg.TrError) { Log '出错中断：该触发器已关闭'; exit 0 }
+        }
+        'question' {
+            if (-not $cfg.TrQuestion) { Log '等待回答：该触发器已关闭'; exit 0 }
         }
     }
 

@@ -180,7 +180,9 @@ def main(argv=None):
         if args.uninstall:
             print("Owned hooks removed (or previewed). Skill, config and state retained.")
         else:
-            print("PermissionRequest only. Codex has no documented StopFailure hook.")
+            print("PermissionRequest hook installed; error watcher and question notifier are separate entry points.")
+            print("After enabling notifications, start the current-thread error watcher:")
+            print(f'  python "{destination / "scripts" / "codex_watch.py"}" start')
             print("Review/trust the hook in Codex (CLI: /hooks); never bypass hook trust.")
             print("New installs default to disabled; existing enabled/config values are preserved.")
             print("Enable only when requested: powershell -NoProfile -ExecutionPolicy Bypass "

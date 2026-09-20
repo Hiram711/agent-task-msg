@@ -46,8 +46,9 @@ if (Test-Path -LiteralPath $qdir) {
 
 Write-Output ("推送总开关 : {0}" -f $(if ($cfg.enabled) { '已开启' } else { '已关闭（不会发任何消息）' }))
 Write-Output ("目标会话   : {0}" -f $cfg.target)
-Write-Output ("触发器     : 需要处理={0} 出错中断={1}" -f `
-        $cfg.triggers.needs_input, $cfg.triggers.error)
+$question = if ($null -eq $cfg.triggers.question) { $true } else { $cfg.triggers.question }
+Write-Output ("触发器     : 需要处理={0} 出错中断={1} 等待回答={2}" -f `
+        $cfg.triggers.needs_input, $cfg.triggers.error, $question)
 
 # 发送脚本在不在也要报：它是独立技能 wechat-send，缺了整套就发不出去，
 # 而那种失败只会出现在 state/notify.log 里，用户看 -Status 是看不见的。
