@@ -122,6 +122,72 @@ exit 0
         self.assertEqual(notify("question", "hello", "thread", root=self.scratch), "disabled")
         self.assertFalse((self.scratch / "delivered.txt").exists())
 
+    def test_permission_auto_review_and_unknown_do_not_start_delivery(self):
+        for reviewer in ("auto_review", "guardian_subagent", "unknown"):
+            with self.subTest(reviewer=reviewer):
+                result = notify("permission_request", "申请读取项目附件", "thread", root=self.scratch,
+                                approvals_reviewer=reviewer)
+                self.assertTrue(result.startswith("skipped"))
+        self.assertTrue(notify("permission_request", "no mode supplied", "thread",
+                               root=self.scratch).startswith("skipped"))
+        self.assertFalse((self.scratch / "state").exists())
+        self.assertFalse((self.scratch / "delivered.txt").exists())
+
+    def test_manual_permission_cli_pipeline_and_deduplication(self):
+        script = self.scratch / "scripts/codex_notify.py"
+        script.write_bytes((ROOT / "scripts/codex_notify.py").read_bytes())
+        message = self.scratch / "permission.txt"
+        message.write_text("申请读取项目附件，用于完成本次整理。", encoding="utf-8")
+        argv = [sys.executable, str(script), "--kind", "permission_request", "--approvals-reviewer", "user",
+                "--message-file", str(message), "--thread-id", "thread", "--turn-id", "turn", "--cwd", "project"]
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("processed", result.stdout)
+        body = (self.scratch / "delivered.txt").read_text(encoding="utf-8-sig")
+        self.assertIn("[Codex] 即将申请访问权限", body)
+        self.assertIn("当前为人工审批模式", body)
+        self.assertIn("申请读取项目附件", body)
+        self.assertNotIn("需要你处理", body)
+        self.assertFalse(list((self.scratch / "state").glob("codex_event_*.json")))
+        (self.scratch / "delivered.txt").unlink()
+        repeated = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertFalse((self.scratch / "delivered.txt").exists())
+        self.assertIn("去重跳过", (self.scratch / "state/notify.log").read_text(encoding="utf-8-sig"))
+
+    def test_permission_trigger_legacy_opt_out_and_global_switch(self):
+        del self.cfg["triggers"]["permission_request"]
+        self.cfg["triggers"]["needs_input"] = False
+        self.write_json(self.scratch / "config.json", self.cfg)
+        self.assertEqual(notify("permission_request", "legacy disabled", "thread", root=self.scratch,
+                                approvals_reviewer="user"), "disabled")
+        self.cfg["triggers"].update(needs_input=True, permission_request=False)
+        self.write_json(self.scratch / "config.json", self.cfg)
+        self.assertEqual(notify("permission_request", "explicit disabled", "thread", root=self.scratch,
+                                approvals_reviewer="user"), "disabled")
+        self.cfg["triggers"]["permission_request"] = True
+        self.cfg["enabled"] = False
+        self.write_json(self.scratch / "config.json", self.cfg)
+        self.assertEqual(notify("permission_request", "global disabled", "thread", root=self.scratch,
+                                approvals_reviewer="user"), "disabled")
+        self.assertFalse((self.scratch / "delivered.txt").exists())
+
+    def test_direct_worker_also_filters_automatic_or_missing_reviewer(self):
+        for reviewer in ("auto_review", None):
+            with self.subTest(reviewer=reviewer):
+                payload = self.scratch / "permission.json"
+                data = {"agent": "Codex", "message": "请勿发送", "session_id": "thread"}
+                if reviewer:
+                    data["approvals_reviewer"] = reviewer
+                self.write_json(payload, data)
+                result = subprocess.run([str(PS), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                                         str(self.scratch / "scripts/wx_notify.ps1"), "-Kind", "permission_request",
+                                         "-PayloadFile", str(payload)], capture_output=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertFalse(payload.exists())
+        self.assertFalse((self.scratch / "delivered.txt").exists())
+        self.assertFalse(list((self.scratch / "state/queue").glob("*.json")))
+
 
 if __name__ == "__main__":
     unittest.main()

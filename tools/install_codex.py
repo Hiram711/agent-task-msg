@@ -180,7 +180,7 @@ def main(argv=None):
         if args.uninstall:
             print("Owned hooks removed (or previewed). Skill, config and state retained.")
         else:
-            print("PermissionRequest hook installed; error watcher and question notifier are separate entry points.")
+            print("PermissionRequest hook installed; error watcher, question and manual-permission pre-notices are separate entry points.")
             print("After enabling notifications, start the current-thread error watcher:")
             print(f'  python "{destination / "scripts" / "codex_watch.py"}" start')
             print("Review/trust the hook in Codex (CLI: /hooks); never bypass hook trust.")

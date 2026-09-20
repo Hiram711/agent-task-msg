@@ -1,17 +1,18 @@
 # Codex 适配（Windows）
 
-## 三条通知入口
+## 通知入口
 
 | 场景 | 实现 | 前提 |
 | --- | --- | --- |
 | 权限审批 | `PermissionRequest` hook | 需宿主派发事件并信任 hook；当前桌面路径仍有实测限制 |
 | API 等错误导致回合失败 | 独立的 `codex_watch.py` 读取持久化回合状态 | 当前任务观察器已运行；仅对明确的 `failed` 提醒 |
 | 等待用户回答 | 智能体提问前调用 `codex_notify.py` | 技能已加载且执行了提问流程；不是全局事件监听 |
+| 人工模式的权限申请预提醒 | `codex_notify.py --kind permission_request --approvals-reviewer user` | 调用 `request_permissions` 前确认当前为人工审批；自动审查和模式不明时跳过 |
 
 不注册任务完成通知；`completed`、`interrupted`、重试中及读取错误均不当作 API 故障。
-两个新入口都遵守总开关、目标会话、免打扰、队列与去重配置，不自动批准权限。
-权限通知的需求边界是“需要用户处理”：自动审批后继续执行不额外提醒；自动拒绝后确实需要用户回答时，
-走主动提问入口。因此不为自动审批路径增加一律发送的 `PreToolUse` 预提醒。
+主动通知入口遵守总开关、目标会话、免打扰、队列与去重配置，不自动批准权限。
+`request_permissions` 在自动审查模式下不预提醒；自动拒绝后确实需要用户回答时，走主动提问入口。
+人工审批模式在申请前主动提醒，不依赖原生权限 hook。它是按审批模式过滤的预提醒，不能证明卡片已经出现。
 
 依据：[官方 Hooks](https://developers.openai.com/zh-Hans/docs/hooks)、[官方 App Server](https://developers.openai.com/zh-Hans/docs/app-server)（2026-09-20 核对）。
 
@@ -28,7 +29,7 @@ python tools/install_codex.py
 安装器将完整技能放入 `$CODEX_HOME/skills/agent-task-msg`，合并 `$CODEX_HOME/hooks.json`。
 未设置环境变量时，`CODEX_HOME` 默认为 `~/.codex`。可以用 `--codex-home` 指定安装位置，
 用 `--sender-script` 显式指定 `wx_send.ps1`。现有配置、状态和其它 hook 会保留；旧配置缺少
-`triggers.question` 时按 true 处理，但总开关仍必须开启。
+`triggers.question` 时按 true 处理；`triggers.permission_request` 缺失时沿用 `needs_input`（后者缺失则 true），但总开关仍必须开启。
 
 安装器在修改文件前创建 `.bak-时间戳`，重复安装不叠加 hook；`--dry-run` 不写任何文件。
 它不修改 hook 信任记录、不注册系统计划任务，也不自动打开推送或启动观察器。
@@ -97,6 +98,27 @@ python scripts/codex_notify.py --message-file 'C:\work\question.txt'
 该流程能处理普通文字提问和问题卡片，但依赖智能体执行技能步骤。
 没有加载技能、没有调用入口或事先因 API 故障停止时，不能保证提问提醒。
 
+## 权限申请前按审批模式过滤
+
+以当前任务/回合有效的 `approvals_reviewer` 为准，不读取一个可能被会话设置覆盖的全局默认值来猜测。
+自动审查 `auto_review`（旧名 `guardian_subagent`）直接申请；通过继续，被拒绝后只有必须询问用户时才发提问通知。
+模式不明也跳过预提醒，不用等待秒数推断是否自动批准。依据：[官方自动审查说明](https://developers.openai.com/zh-Hans/docs/sandboxing/auto-review)。
+
+确认人工模式 `user` 且需要申请额外权限时，先把简短用途写入 UTF-8 文件，再运行：
+
+```powershell
+python scripts/codex_notify.py --kind permission_request --approvals-reviewer user --message-file 'C:\work\permission.txt'
+```
+
+随后正常调用 `request_permissions`；不要并行发送通知和申请，也不要因通知失败而阻塞申请或递归请求发送通知所需的权限。
+标题为 `[Codex] 即将申请访问权限`，正文注明“当前为人工审批模式”，让用户以实际权限请求为准。
+不发送完整命令、凭据或敏感路径；只说明用途。`--approvals-reviewer` 是调用者提供的当前上下文，不是设置或改变 Codex 的审批模式。
+不传该参数、传 `auto_review` 或 `unknown` 都返回 `skipped`，且不调用发送器；直接调用 PowerShell 也检查载荷中的人工模式标记。
+
+这只补充 `request_permissions`，不对普通文件操作、`exec_command` 或其它工具一律预提醒。
+它依赖智能体执行技能步骤，不监听任务内的所有工具。审批模式只是路由信息，不等同于每次请求最终的批准结果；
+模式运行中改变、申请取消或宿主另行处理时，预提醒可能与最终卡片不一致。该实现不替换启动器、不代理桌面连接、不改核心。
+
 ## 权限 hook 与微信发送限制
 
 新权限 hook 仍需用户在 `/hooks` 中审查并信任。它使用 `-EncodedCommand` 处理带空格和特殊字符的路径；
@@ -107,7 +129,7 @@ python scripts/codex_notify.py --message-file 'C:\work\question.txt'
 ```
 
 本机桌面版核心 0.155.0-alpha.9.2 的 `request_permissions` 路径实测未产生通知，
-重启也未解决。两个新增入口不依赖这个权限 hook，但不代表权限审批问题已修复。
+重启也未解决。人工模式预提醒补充这条路径，但没有让宿主补发缺失的原生 hook。
 后续独立核心对照确认：人工审批模式下，`exec_command` 提权会派发该 hook，
 `request_permissions` 会产生待审批请求但没有派发该 hook。当前桌面任务本身使用自动审查，
 不能把这项对照结论扩大成“所有桌面审批都不支持”；详见 [联调记录](integration-result.md)。

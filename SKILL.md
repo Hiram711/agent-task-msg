@@ -1,6 +1,6 @@
 ---
 name: agent-task-msg
-description: 通过本机微信提醒 Codex 回合失败、等待用户回答及权限审批，或 Claude Code 的待确认和 API 错误中断。用于开启、关闭推送和查询状态；Codex 错误提醒需启动独立观察器，提问提醒由智能体在提问前调用。任务完成通知仍按用户要求调用 wechat-send。
+description: 通过本机微信提醒 Codex 回合失败、等待用户回答及权限审批，或 Claude Code 的待确认和 API 错误中断。用于开启、关闭推送和查询状态；Codex 错误提醒需独立观察器，提问及人工权限申请前由智能体主动通知，自动审查模式跳过权限预提醒。任务完成通知仍按用户要求调用 wechat-send。
 ---
 
 # 微信任务提醒
@@ -9,7 +9,7 @@ description: 通过本机微信提醒 Codex 回合失败、等待用户回答及
 
 ## 运行环境
 
-- **Codex**：先读 [Codex 安装与事件说明](references/codex.md)，使用 `tools/install_codex.py`。安装器复制完整运行文件到 `$CODEX_HOME/skills/agent-task-msg`，并合并 `$CODEX_HOME/hooks.json`；默认 `CODEX_HOME` 是 `~/.codex`。权限 hook、错误观察器和主动提问通知是三个独立入口。新 hook 需要用户审查并信任，安装技能本身不代表自动通知已接通。
+- **Codex**：先读 [Codex 安装与事件说明](references/codex.md)，使用 `tools/install_codex.py`。安装器复制完整运行文件到 `$CODEX_HOME/skills/agent-task-msg`，并合并 `$CODEX_HOME/hooks.json`；默认 `CODEX_HOME` 是 `~/.codex`。权限 hook、错误观察器、主动提问和权限申请预提醒是独立入口。新 hook 需要用户审查并信任，安装技能本身不代表自动通知已接通。
 - **Claude Code**：使用 `tools/install.py`；下面的 `Notification` / `StopFailure` 和 `settings.json` 热加载说明仅适用于 Claude Code。
 - 两种环境共用下述开关、免打扰、队列与微信发送逻辑。Codex 安装版的相对路径以已安装的技能目录为准，不要误改克隆仓库的 `config.json`。
 
@@ -43,10 +43,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/wx_switch.ps1 -Statu
 关闭时运行 `wx_switch.ps1 -Off`，然后 `python scripts/codex_watch.py stop`。
 观察器每个任务单独启动，不会自动监测其它任务。权限/执行环境不允许启动时，明确报告错误观察尚未启用。
 
-**Codex 权限提醒以需要用户处理为目标。** 自动审批后能继续执行时，不额外发送权限预提醒，
-也不要为这类请求未触发 hook 而补一个“一申请就通知”的入口。自动审批拒绝后，若能自行采用安全替代方案，
-继续执行；确实需要停下来询问用户时，按下面的提问流程通知。当前权限 hook 的覆盖实测见 Codex 说明，
-不能仅凭出现权限申请就断言用户正在被等待。
+**Codex 调用 `request_permissions` 前，先按当前生效的审批模式过滤。**
+
+- `approvals_reviewer = auto_review`（旧名 `guardian_subagent`）：直接申请，不发权限预提醒；通过后继续。被拒绝时遵守审查结果，有安全替代方案就继续，确实需要用户决定时走下述提问通知。
+- 明确为 `user`，且确实即将申请尚未获得的权限：将简短用途写入 UTF-8 文件，运行 `python scripts/codex_notify.py --kind permission_request --approvals-reviewer user --message-file <绝对路径>`，然后再调用原权限工具。
+- 模式不明，或已知策略禁止该申请：不猜测人工等待、不发送预提醒。已有权限足够时不再申请。
+
+模式以当前任务/回合的有效上下文为准，不用全局 `config.toml` 的默认值覆盖它。脚本缺少模式参数也会跳过。
+这是申请前的模式过滤，不是预测批准结果；标题为“即将申请访问权限”，不能声称审批卡片已出现。
+只用于 `request_permissions`，不扩展到每次文件操作或 `exec_command` 提权；已有命令审批 hook 保持原流程。
+入口依赖技能已加载且智能体执行步骤，不是全局监听，也不修改 Codex 启动器或核心。
+通知关闭、跳过或失败都不阻止正常权限申请；不重复通知，也不为了发送预提醒递归申请权限。
 
 **在 Codex 中准备停下来等用户回答时**（包括 `request_user_input`、异步问题卡片或最终回复中的必要问题）：
 将真正需要用户决定的问题和简短选项写入 UTF-8 文件，然后运行
@@ -60,7 +67,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/wx_switch.ps1 -Statu
 ## 触发器
 
 以下是 Claude Code 的事件。Codex 的 `PermissionRequest` 映射到 `needs_input`；
-独立观察器将明确的 `failed` 回合映射到 `error`；主动提问入口使用 `question`。
+独立观察器将明确的 `failed` 回合映射到 `error`；主动提问入口使用 `question`，人工模式权限预提醒使用 `permission_request`。
 Codex 的权限 hook 在本机桌面审批路径仍有实测限制，见 [联调记录](references/integration-result.md)。
 
 | 触发器 | 什么时候响 | 对应 hook | 默认 |
@@ -111,6 +118,7 @@ matcher 里刻意不含 `idle_prompt`（「一轮干完在等下一句」）—�
 | `triggers.needs_input` | `true` | 需要确认/授权时是否发。 |
 | `triggers.error` | `true` | 出错中断时是否发。 |
 | `triggers.question` | `true` | Codex 主动提问前是否发；旧配置缺字段也按 true，仍受总开关控制。 |
+| `triggers.permission_request` | `true` | Codex 人工模式的权限申请预提醒；缺字段时沿用 `needs_input`，后者也缺失则 true。自动审查或模式不明时仍跳过。 |
 | `presence_idle_min_seconds` | `120` | 键鼠空闲不到这个数就不发 —— 你人在机器前，该看见的已经看见了，没必要为此夺走前台 40 秒。设 `0` 关掉这道判断（回到「立即发，不管打扰」）。 |
 | `summary_max_chars` | `220` | 摘要截断长度。 |
 | `dedupe_seconds` | `90` | 这个窗口内同样内容只发一条。去重键刻意**不含**时间那一行，否则等于永不去重。 |
@@ -195,7 +203,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/test_notify.ps1
 | `tools/probe_codex_approvals.py` | 使用本机模拟模型，对照命令提权与权限申请；临时会话中的审批全部拒绝，不发送微信。 |
 | `tools/install_codex.py` | Codex 安装、预览和移除 hook。保留用户配置与其它 hook。 |
 | `scripts/codex_watch.py` | 独立观察当前任务的持久化 failed 回合；支持 check/start/status/stop。 |
-| `scripts/codex_notify.py` | Codex 提问前的主动通知入口。 |
+| `scripts/codex_notify.py` | Codex 提问及人工模式权限申请前的主动通知入口。 |
 | `scripts/codex_rpc.py` | 官方 App Server 只读客户端，不启动或恢复任务。 |
 | `references/codex.md` | Codex 事件范围、信任步骤、安装和无微信自测。 |
 | `scripts/wx_notify.ps1` | 判断该不该发、组装正文、去重，然后调发送技能或排队。 |

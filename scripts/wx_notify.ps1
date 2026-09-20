@@ -15,7 +15,7 @@
       6. 发送前先冲队列，保证消息顺序。
 
 .PARAMETER Kind
-    needs_input | error | question。question 由 Codex 主动提问入口调用。
+    needs_input | error | question | permission_request。后两种由 Codex 主动通知入口调用。
 
 .PARAMETER PayloadFile
     hook 原始 stdin JSON 的落盘路径。
@@ -36,7 +36,7 @@
 #>
 param(
     # 不要叫 $Event：PowerShell 里 $Event 是事件相关的自动变量，会打架。
-    [ValidateSet('needs_input', 'question', 'error')]
+    [ValidateSet('needs_input', 'question', 'permission_request', 'error')]
     [string]$Kind = '',
     [string]$PayloadFile = '',
     [switch]$FlushOnly,
@@ -128,6 +128,7 @@ function Get-Cfg {
         SenderPath  = [string](Def $c.sender_script '')
         TrNeedsIn   = [bool](Def $c.triggers.needs_input $true)
         TrQuestion  = [bool](Def $c.triggers.question $true)
+        TrPermission = [bool](Def $c.triggers.permission_request (Def $c.triggers.needs_input $true))
         TrError     = [bool](Def $c.triggers.error $true)
         PresenceSec = [int](Def $c.presence_idle_min_seconds 120)
         SumMax      = [int](Def $c.summary_max_chars 220)
@@ -195,6 +196,7 @@ function Build-Body($cfg, [string]$ev, $pl) {
     $head = switch ($ev) {
         'needs_input'    { "[$agentName] 需要你处理" }
         'question'       { "[$agentName] 等待你回答" }
+        'permission_request' { "[$agentName] 即将申请访问权限" }
         'error'          { "[$agentName] 出错中断" }
     }
     $proj = ''
@@ -211,6 +213,7 @@ function Build-Body($cfg, [string]$ev, $pl) {
         $cands = switch ($ev) {
             'needs_input'    { @($pl.message, $pl.notification, $pl.last_assistant_message) }
             'question'       { @($pl.message) }
+            'permission_request' { @($pl.message) }
             'error'          { @($pl.error_message, $pl.error, $pl.message, $pl.last_assistant_message) }
         }
         foreach ($c in $cands) {
@@ -222,6 +225,9 @@ function Build-Body($cfg, [string]$ev, $pl) {
         $sumClip = Clip-Text $sum $cfg.SumMax
         $null = $lines.Add('—')
         $null = $lines.Add($sumClip)
+    }
+    if ($ev -eq 'permission_request') {
+        $null = $lines.Add('当前为人工审批模式。这是申请前预提醒；请以 Codex 实际显示的权限请求为准。')
     }
     # Key 供去重用，必须剔掉时间那一行：它每次都不一样，拿整条正文算哈希等于永不去重。
     $scope = ''
@@ -409,6 +415,10 @@ try {
         Log ("总开关关闭，跳过 ({0})" -f $(if ($FlushOnly) { 'flush' } else { $Kind }))
         exit 0
     }
+    if ($Kind -eq 'permission_request' -and $pl.approvals_reviewer -cne 'user') {
+        Log '权限预提醒：未确认人工审批模式，跳过'
+        exit 0
+    }
 
     # 定位发送器。放在这儿：总开关之后（关着就啥也不做），发送和补发两条路之前。
     # 找不到属于配置问题，不是"这次发不出去" —— 所以直接跳过，不排队：
@@ -443,6 +453,9 @@ try {
         }
         'question' {
             if (-not $cfg.TrQuestion) { Log '等待回答：该触发器已关闭'; exit 0 }
+        }
+        'permission_request' {
+            if (-not $cfg.TrPermission) { Log '权限预提醒：该触发器已关闭'; exit 0 }
         }
     }
 
