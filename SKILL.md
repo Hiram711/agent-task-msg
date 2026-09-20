@@ -1,11 +1,17 @@
 ---
 name: agent-task-msg
-description: 当 Claude Code 需要用户确认/授权、或回合因 API 出错中断时，通过本机微信的「文件传输助手」给用户发一条提醒 —— 这两种情况 Claude 自己发不出来，只能靠 hook。全程只在本机操作微信客户端，不经过任何第三方服务。用户说「开启/关闭推送」「看下推送状态」「改配置」时，也用本 skill 里的脚本处理。用户交代「离开一会儿，完事微信叫我」时，本技能的 hook 不管这一路：当场回一句确认并记进 todo，收尾时自己调 wechat-send 发。
+description: 通过本机微信提醒用户处理 Codex 权限审批，或 Claude Code 的待确认和 API 错误中断；也用于开启、关闭推送及查询状态。Codex 只接入 PermissionRequest，不支持自动 API 错误通知。任务完成后的微信通知由智能体按用户要求调用 wechat-send。
 ---
 
 # 微信任务提醒
 
 任务状态变化时，往本机微信「文件传输助手」发一条中文提醒。
+
+## 运行环境
+
+- **Codex**：先读 [Codex 安装与事件说明](references/codex.md)，使用 `tools/install_codex.py`。安装器复制完整运行文件到 `$CODEX_HOME/skills/agent-task-msg`，并合并 `$CODEX_HOME/hooks.json`；默认 `CODEX_HOME` 是 `~/.codex`。仅注册 `PermissionRequest`，不注册 Claude 专属事件。新 hook 需要用户审查并信任，安装技能本身不代表通知已接通。
+- **Claude Code**：使用 `tools/install.py`；下面的 `Notification` / `StopFailure` 和 `settings.json` 热加载说明仅适用于 Claude Code。
+- 两种环境共用下述开关、免打扰、队列与微信发送逻辑。Codex 安装版的相对路径以已安装的技能目录为准，不要误改克隆仓库的 `config.json`。
 
 设计前提有两条，别绕开：
 
@@ -31,11 +37,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/wx_switch.ps1 -Statu
 
 `-Status` 会打印总开关、目标会话、两个触发器的开关、发送脚本位置、待补发队列条数。其它字段（在场阈值、去重窗口、要不要排队）没有命令行开关，直接改 `config.json`。
 
-改完不用重启会话：`wx_notify.ps1` 每次触发都重新读 `config.json`，hook 配置也由 Claude Code 的文件监视器热加载（2026-09-19 实测过，见「安装」）。
+开关修改不用重启会话：`wx_notify.ps1` 每次触发都重新读 `config.json`。Claude Code 的 hook 配置由文件监视器热加载；Codex 的 hook 修改需重新审查其信任状态，不能套用 Claude 的热加载结论。
 
 ## 触发器
 
-只覆盖**Claude 自己发不出通知**的情况。这是本技能的边界，别往外扩。
+只覆盖**智能体自己发不出通知**的情况。以下是 Claude Code 的事件；Codex 的 `PermissionRequest` 映射到同一个 `needs_input` 触发器，`error` 在 Codex 中没有对应的自动事件。
 
 | 触发器 | 什么时候响 | 对应 hook | 默认 |
 | --- | --- | --- | --- |
@@ -91,7 +97,9 @@ matcher 里刻意不含 `idle_prompt`（「一轮干完在等下一句」）—�
 | `queue_max_age_hours` | `24` | 队列里积压超过这个时长的消息直接丢弃，不再补发。过期的「需要你处理」只是噪音 —— 它指的那个回合早就过去了。设 `0` 表示永不过期。 |
 | `log_max_kb` | `512` | `state/notify.log` 超过就轮转。 |
 
-## 安装
+## Claude Code 安装
+
+Codex 请使用 [独立安装入口](references/codex.md)，不要运行本节的 Claude 安装器。
 
 **先装 `wechat-send`**，本技能靠它发消息。它自己的安装器不碰 `settings.json`：
 
@@ -162,6 +170,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/test_notify.ps1
 | 路径 | 作用 |
 | --- | --- |
 | `hooks/dispatch.ps1` | hook 入口。必须立刻返回、绝不往 stdout 写东西。自己读 stdin 原始字节再按 UTF-8 解码（本机控制台是 CP936，直接 `ReadToEnd` 会把 BOM 和开头的 `{` 一起吃成乱码）。 |
+| `tools/install_codex.py` | Codex 安装、预览和移除 hook。保留用户配置与其它 hook。 |
+| `references/codex.md` | Codex 事件范围、信任步骤、安装和无微信自测。 |
 | `scripts/wx_notify.ps1` | 判断该不该发、组装正文、去重，然后调发送技能或排队。 |
 | `scripts/wx_switch.ps1` | 开关与配置。 |
 | `state/` | 去重记录、队列、日志。可随时删，会重建。 |
@@ -173,6 +183,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/test_notify.ps1
 | --- | --- |
 | `config.json` 的 `sender_script` | 最高。填了就只认它 —— 填了却找不到是配置错误，不会悄悄退回默认路径，否则你以为在用自己指定的那份，实际用的是别的。 |
 | `../wechat-send-skill/scripts/wx_send.ps1` | 默认布局，两个技能并排放。 |
+| `../wechat-send/scripts/wx_send.ps1` | 按技能名安装发送器时的布局。 |
 | `scripts/wx_send.ps1` | 拆分之前的老布局，留着兼容。 |
 
 一条都找不到就跳过本次并在日志里说明，不排队（理由见上一节）。

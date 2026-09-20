@@ -14,7 +14,12 @@
     一起删了（2026-09-19）；现在留空就是啥也不干。
 #>
 param(
-    [string]$Kind = ''
+    [string]$Kind = '',
+    [ValidateSet('Claude Code', 'Codex')]
+    [string]$Agent = 'Claude Code',
+    # Codex 安装器用这个稳定标记更新/卸载自己的 handler，不靠仓库目录名。
+    [ValidateSet('', 'agent-task-msg-codex')]
+    [string]$HookOwner = ''
 )
 
 $ErrorActionPreference = 'SilentlyContinue'
@@ -38,6 +43,37 @@ try {
     # 免得被编码规范化工具弄没）。
     $raw = $raw.TrimStart([char]0xFEFF)
 
+    if ($Agent -eq 'Codex') {
+        # Codex 的 PermissionRequest 与 Claude Notification 字段不同。
+        # 仅接受已支持的事件；绝不输出 allow/deny，也不更改审批决定。
+        $pl = $raw | ConvertFrom-Json -ErrorAction Stop
+        if ($pl.hook_event_name -ne 'PermissionRequest') { exit 0 }
+        $Kind = 'needs_input'
+        $message = 'Codex 正在等待权限批准。'
+        if ($pl.tool_input.description -is [string] -and $pl.tool_input.description.Trim()) {
+            $message = $pl.tool_input.description
+        }
+        if ($pl.tool_name -is [string] -and $pl.tool_name.Trim()) {
+            $message = ('工具：{0}；{1}' -f $pl.tool_name, $message)
+        }
+        # 命令和 MCP 参数可能有密钥：只发送审批说明，不转发完整 tool_input。
+        # 用其哈希区分同轮次中不同的请求，避免两个不同命令被误去重。
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            # PowerShell 5.1 的 ConvertTo-Json 对 null 不输出文本。
+            $inputJson = if ($null -eq $pl.tool_input) { 'null' }
+                         else { ConvertTo-Json -InputObject $pl.tool_input -Depth 50 -Compress }
+            $requestKey = [BitConverter]::ToString($sha.ComputeHash(
+                [System.Text.Encoding]::UTF8.GetBytes($inputJson))) -replace '-', ''
+        } finally { $sha.Dispose() }
+        $raw = [ordered]@{
+            agent = 'Codex'; hook_event_name = 'PermissionRequest'
+            session_id = $pl.session_id; turn_id = $pl.turn_id; cwd = $pl.cwd
+            message = $message; request_key = $requestKey
+        } | ConvertTo-Json -Depth 5 -Compress
+    }
+
+    if ($Kind -notin @('needs_input', 'error')) { exit 0 }
     $root = Split-Path -Parent $PSScriptRoot
     $stateDir = Join-Path $root 'state'
     if (-not (Test-Path -LiteralPath $stateDir)) {
@@ -45,10 +81,8 @@ try {
     }
     $utf8 = New-Object System.Text.UTF8Encoding($false)
 
-    if ($Kind -eq '') { exit 0 }
-
     $pf = Join-Path $stateDir ("hook_{0}_{1}.json" -f $Kind, ([guid]::NewGuid().ToString('N').Substring(0, 8)))
-    try { [System.IO.File]::WriteAllText($pf, $raw, $utf8) } catch { $pf = '' }
+    [System.IO.File]::WriteAllText($pf, $raw, $utf8)
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
@@ -58,6 +92,11 @@ try {
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     [System.Diagnostics.Process]::Start($psi) | Out-Null   # 不 WaitForExit：立刻返回
-} catch {}
+} catch {
+    # 后台进程没启动时也清理临时 payload，失败不影响主会话。
+    if ($pf -and (Test-Path -LiteralPath $pf)) {
+        Remove-Item -LiteralPath $pf -Force -ErrorAction SilentlyContinue
+    }
+}
 
 exit 0

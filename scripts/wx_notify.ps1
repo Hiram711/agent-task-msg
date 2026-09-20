@@ -57,11 +57,13 @@ $SentPath = Join-Path $StateDir 'last_sent.json'
 # 按顺序找，第一个存在的就用：
 #   1. config.json 的 sender_script（用户把发送技能放在别处时填这个）
 #   2. 同级目录的 wechat-send-skill（默认布局：两个技能并排放）
-#   3. 本项目 scripts\wx_send.ps1（拆分之前的老布局，留着兼容）
+#   3. 同级目录的 wechat-send（按技能名安装时的布局）
+#   4. 本项目 scripts\wx_send.ps1（拆分之前的老布局，留着兼容）
 # 一个都找不到不能当成"锁屏"去排队 —— 那会让队列里的消息永远重试永远失败，
 # 还把真正的原因埋掉。Resolve-Sender 返回 $null，调用方据此报配置错误。
 $SenderCandidates = @(
     (Join-Path (Split-Path -Parent $Root) 'wechat-send-skill\scripts\wx_send.ps1'),
+    (Join-Path (Split-Path -Parent $Root) 'wechat-send\scripts\wx_send.ps1'),
     (Join-Path $PSScriptRoot 'wx_send.ps1')
 )
 function Resolve-Sender([string]$fromCfg) {
@@ -188,9 +190,10 @@ function Clip-Text([string]$s, [int]$max) {
 }
 
 function Build-Body($cfg, [string]$ev, $pl) {
+    $agentName = if ($pl -and $pl.agent -eq 'Codex') { 'Codex' } else { 'Claude Code' }
     $head = switch ($ev) {
-        'needs_input'    { '[Claude Code] 需要你处理' }
-        'error'          { '[Claude Code] 出错中断' }
+        'needs_input'    { "[$agentName] 需要你处理" }
+        'error'          { "[$agentName] 出错中断" }
     }
     $proj = ''
     if ($pl -and $pl.cwd) { $proj = Split-Path -Leaf ([string]$pl.cwd) }
@@ -218,9 +221,13 @@ function Build-Body($cfg, [string]$ev, $pl) {
         $null = $lines.Add($sumClip)
     }
     # Key 供去重用，必须剔掉时间那一行：它每次都不一样，拿整条正文算哈希等于永不去重。
+    $scope = ''
+    if ($agentName -eq 'Codex') {
+        $scope = '|{0}|{1}|{2}' -f $pl.session_id, $pl.turn_id, $pl.request_key
+    }
     return [pscustomobject]@{
         Body = ($lines -join "`n")
-        Key  = ($head + '|' + $proj + '|' + $sumClip)
+        Key  = ($head + '|' + $proj + '|' + $sumClip + $scope)
     }
 }
 
