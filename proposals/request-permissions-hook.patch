@@ -1,0 +1,43 @@
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -2986,6 +2986,7 @@
+                 reason: args.reason.clone(),
+                 permissions: requested_permissions.clone(),
+             };
++            let hook_payload = action.permission_request_payload();
+             let approval_context = ApprovalContext {
+                 review_context: crate::guardian::GuardianReviewContext::from(step_context),
+                 cancellation_token: Some(cancellation_token.clone()),
+@@ -3003,6 +3004,32 @@
+                     action,
+                     &approval_context,
+                 ) => decision,
++            };
++            // Notify only on the path that would otherwise ask the user.
++            // An automatic reviewer decision must not trigger a manual prompt hook.
++            let decision = match decision {
++                Some(decision) => Some(decision),
++                None => {
++                    let hook_decision = tokio::select! {
++                        biased;
++                        _ = cancellation_token.cancelled() => return None,
++                        result = crate::hook_runtime::run_permission_request_hooks(
++                            self,
++                            &approval_context.review_context,
++                            &call_id,
++                            hook_payload,
++                        ) => result,
++                    };
++                    match hook_decision {
++                        Some(codex_hooks::PermissionRequestDecision::Allow) => {
++                            Some(ReviewDecision::Approved)
++                        }
++                        Some(codex_hooks::PermissionRequestDecision::Deny { message }) => {
++                            Some(ReviewDecision::denied(message))
++                        }
++                        None => None,
++                    }
++                }
+             };
+             if let Some(decision) = decision {
+                 let (permissions, scope) = match decision {
